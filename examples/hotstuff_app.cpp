@@ -132,6 +132,13 @@ class HotStuffApp: public HotStuff {
     /** The listen address for client RPC */
     NetAddr clisten_addr;
 
+    /** enable leader fault mode */
+    bool enable_leader_fault;
+
+    // 新增领导者崩溃模拟计时器和参数
+    TimerEvent leader_crash_timer;
+    double leader_tenure; // 领导者任期时间（秒）
+
     std::unordered_map<const uint256_t, promise_t> unconfirmed;
 
     using conn_t = ClientNetwork<opcode_t>::conn_t;
@@ -145,6 +152,7 @@ class HotStuffApp: public HotStuff {
     salticidae::BoxObj<salticidae::ThreadCall> req_tcall;
 
     void client_request_cmd_handler(MsgReqCmd &&, const conn_t &);
+    void simulate_leader_crash();
 
     static command_t parse_cmd(DataStream &s) {
         auto cmd = new CommandDummy();
@@ -191,7 +199,9 @@ class HotStuffApp: public HotStuff {
                 const EventContext &ec,
                 size_t nworker,
                 const Net::Config &repnet_config,
-                const ClientNetwork<opcode_t>::Config &clinet_config);
+                const ClientNetwork<opcode_t>::Config &clinet_config,
+                bool enable_leader_fault,
+                double leader_tenure);
 
     void start(const std::vector<std::tuple<NetAddr, bytearray_t, bytearray_t>> &reps, double delta);
     void stop();
@@ -226,7 +236,7 @@ int main(int argc, char **argv) {
     auto opt_fixed_proposer = Config::OptValInt::create(1);
     auto opt_base_timeout = Config::OptValDouble::create(1);
     auto opt_prop_delay = Config::OptValDouble::create(1);
-    auto opt_imp_timeout = Config::OptValDouble::create(11);
+    auto opt_imp_timeout = Config::OptValDouble::create(12);
     auto opt_nworker = Config::OptValInt::create(1);
     auto opt_repnworker = Config::OptValInt::create(1);
     auto opt_repburst = Config::OptValInt::create(100);
@@ -236,6 +246,7 @@ int main(int argc, char **argv) {
     auto opt_delta = Config::OptValDouble::create(1);
     auto opt_leader_fault = Config::OptValFlag::create(false); // add this option to enable the faulty leaders
     auto opt_faulty_list = Config::OptValStr::create(""); // add this option for specific faulty replica list
+    double leader_tenure = 10.0; // default leader tenure time
 
     config.add_opt("block-size", opt_blk_size, Config::SET_VAL);
     config.add_opt("parent-limit", opt_parent_limit, Config::SET_VAL);
@@ -261,6 +272,7 @@ int main(int argc, char **argv) {
     config.add_opt("help", opt_help, Config::SWITCH_ON, 'h', "show this help info");
     config.add_opt("leader-fault", opt_leader_fault, Config::SWITCH_ON, 'F', "enable faulty leaders (default: false)");
     config.add_opt("faulty-list", opt_faulty_list, Config::SET_VAL, '\0', "specify list of faulty replicas, e.g., \"0,2,4,6,8\"");
+    config.add_opt("leader-tenure", Config::OptValDouble::create(leader_tenure), Config::SET_VAL, '\0', "set the leader tenure time in seconds (default: 10.0)");
 
     EventContext ec;
     config.parse(argc, argv);
@@ -337,6 +349,7 @@ int main(int argc, char **argv) {
     // 读取leader-fault配置
     bool enable_leader_fault = opt_leader_fault->get();
     HOTSTUFF_LOG_INFO("leader fault mode: %s", enable_leader_fault ? "enabled" : "disabled");
+    HOTSTUFF_LOG_DEBUG("leader tenure time: %.2f ms", leader_tenure);
 
     papp = new HotStuffApp(opt_blk_size->get(),
                         opt_stat_period->get(),
@@ -349,7 +362,9 @@ int main(int argc, char **argv) {
                         ec,
                         opt_nworker->get(),
                         repnet_config,
-                        clinet_config);
+                        clinet_config,
+                        enable_leader_fault,
+                        leader_tenure);
     std::vector<std::tuple<NetAddr, bytearray_t, bytearray_t>> reps;
     for (auto &r: replicas)
     {
@@ -381,12 +396,15 @@ HotStuffApp::HotStuffApp(uint32_t blk_size,
                         const EventContext &ec,
                         size_t nworker,
                         const Net::Config &repnet_config,
-                        const ClientNetwork<opcode_t>::Config &clinet_config):
+                        const ClientNetwork<opcode_t>::Config &clinet_config,
+                        bool enable_leader_fault,
+                        double leader_tenure):
     HotStuff(blk_size, idx, raw_privkey,
             plisten_addr, std::move(pmaker), ec, nworker, repnet_config),
     stat_period(stat_period),
     impeach_timeout(impeach_timeout),
-    ec(ec),
+    ec(ec),leader_tenure(leader_tenure),
+    enable_leader_fault(enable_leader_fault),
     cn(req_ec, clinet_config),
     clisten_addr(clisten_addr) {
     /* prepare the thread used for sending back confirmations */
@@ -415,10 +433,30 @@ void HotStuffApp::client_request_cmd_handler(MsgReqCmd &&msg, const conn_t &conn
     const NetAddr addr = conn->get_addr();
     auto cmd = parse_cmd(msg.serialized);
     const auto &cmd_hash = cmd->get_hash();
-    HOTSTUFF_LOG_DEBUG("processing %s", std::string(*cmd).c_str());
+    // HOTSTUFF_LOG_DEBUG("processing %s", std::string(*cmd).c_str());
     exec_command(cmd_hash, [this, addr](Finality fin) {
         resp_queue.enqueue(std::make_pair(fin, addr));
     });
+}
+
+ // 模拟领导者崩溃的方法
+void HotStuffApp::simulate_leader_crash() {
+    if (!enable_leader_fault) return;
+    
+    ReplicaID current_proposer = get_pace_maker()->get_proposer();
+    ReplicaID my_id = get_id();
+    
+    HOTSTUFF_LOG_INFO("检查领导者崩溃条件: 当前领导者=%d, 我的ID=%d", current_proposer, my_id);
+    
+    // 如果我是当前领导者，则模拟崩溃（触发视图变更）
+    if (current_proposer == my_id) {
+        HOTSTUFF_LOG_INFO("我是当前领导者，模拟崩溃...");
+        // 强制触发视图变更
+        get_pace_maker()->impeach();
+    }
+    
+    // 重置计时器，继续监控下一个领导者
+    leader_crash_timer.add(leader_tenure);
 }
 
 void HotStuffApp::start(const std::vector<std::tuple<NetAddr, bytearray_t, bytearray_t>> &reps,
@@ -431,11 +469,24 @@ void HotStuffApp::start(const std::vector<std::tuple<NetAddr, bytearray_t, bytea
     });
     ev_stat_timer.add(stat_period);
     impeach_timer = TimerEvent(ec, [this](TimerEvent &) {
-        if (get_decision_waiting().size())
+        if (get_decision_waiting().size()){
+            HOTSTUFF_LOG_DEBUG("impeaching the pace maker");
             get_pace_maker()->impeach();
+        }
         reset_imp_timer();
     });
     impeach_timer.add(impeach_timeout);
+
+    HOTSTUFF_LOG_INFO("** initializing the system %d**",enable_leader_fault);
+    // 添加领导者崩溃计时器
+    if (enable_leader_fault) {
+        leader_crash_timer = TimerEvent(ec, [this](TimerEvent &) {
+            simulate_leader_crash();
+        });
+        leader_crash_timer.add(leader_tenure);
+        HOTSTUFF_LOG_INFO("已启用领导者崩溃模拟，每 %.2f 秒触发一次", leader_tenure);
+    }
+
     HOTSTUFF_LOG_INFO("** starting the system with parameters **");
     HOTSTUFF_LOG_INFO("blk_size = %lu", blk_size);
     HOTSTUFF_LOG_INFO("conns = %lu", HotStuff::size());
