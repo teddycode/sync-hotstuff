@@ -1,2 +1,2 @@
 #!/bin/bash
-./examples/hotstuff-client --idx 0 --iter -1 --max-async 3
+./bin/hotstuff-client --idx 0 --iter 1000 --max-async 100

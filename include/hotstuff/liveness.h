@@ -306,7 +306,10 @@ class PMRoundRobinProposer: virtual public PaceMaker {
     void on_exp_timeout(TimerEvent &) {
         if (proposer == hsc->get_id())
             do_new_consensus(0, std::vector<uint256_t>{});
-        timer = TimerEvent(ec, [this](TimerEvent &){ rotate(); });
+        timer = TimerEvent(ec, [this](TimerEvent &){ 
+            HOTSTUFF_LOG_PROTO("Pacemaker: timeout, rotate to next proposer");
+            rotate();
+         });
         timer.add(prop_delay);
     }
 

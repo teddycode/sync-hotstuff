@@ -65,6 +65,58 @@ using hotstuff::promise_t;
 
 using HotStuff = hotstuff::HotStuffSecp256k1;
 
+/** 根据节点id判断该副本是否是失效节点，only for test */
+bool is_faulty_replica(ReplicaID rid, uint16_t faulty_size, uint16_t total_replicas) {
+    if(rid > total_replicas) {
+        throw std::invalid_argument("the faulty replica id exceeds total replicas");
+    }
+    uint16_t faulty_limit = total_replicas / 2; 
+    if(faulty_size > faulty_limit) {
+        throw std::invalid_argument("the number of faulty replicas exceeds the limit");
+    }
+    // alway consider the last `faulty_size` replicas as faulty 
+    if (rid >= total_replicas - faulty_size) {
+        return true; // This replica is considered faulty
+    }
+    return false; 
+}
+
+std::vector<ReplicaID> get_faulty_list(std::string faulty_list_str){
+
+    std::vector<ReplicaID> faulty_replicas = {};
+
+      if (!faulty_list_str.empty()) {
+        // 移除可能的方括号
+        faulty_list_str.erase(std::remove(faulty_list_str.begin(), faulty_list_str.end(), '['), faulty_list_str.end());
+        faulty_list_str.erase(std::remove(faulty_list_str.begin(), faulty_list_str.end(), ']'), faulty_list_str.end());
+        
+        std::vector<std::string> faulty_ids = split(faulty_list_str, ",");
+        for (const auto &id_str : faulty_ids) {
+            try {
+                ReplicaID id = std::stoi(id_str);
+                faulty_replicas.push_back(id);
+                HOTSTUFF_LOG_INFO("Added replica %d to faulty list", id);
+            } catch (std::exception &e) {
+                HOTSTUFF_LOG_WARN("Invalid replica ID in faulty-list: %s", id_str.c_str());
+            }
+        }
+    }
+    return faulty_replicas;
+}
+
+bool is_faulty_replica(uint16_t idx, std::vector<ReplicaID> faulty_replicas){
+    if (faulty_replicas.empty()) {
+        return false; // 如果没有故障副本，则返回false
+    }
+    // 检查idx是否在故障副本列表中
+    for (const auto &faulty_id : faulty_replicas) {
+        if (idx == faulty_id) {
+            return true; // idx在故障副本列表中
+        }
+    }
+    return false; // idx不在故障副本列表中
+}
+
 class HotStuffApp: public HotStuff {
     double stat_period;
     double impeach_timeout;
@@ -155,7 +207,7 @@ std::pair<std::string, std::string> split_ip_port_cport(const std::string &s) {
 salticidae::BoxObj<HotStuffApp> papp = nullptr;
 
 int main(int argc, char **argv) {
-    Config config("hotstuff.conf");
+    Config config("./configs/hotstuff.conf");
 
     ElapsedTime elapsed;
     elapsed.start();
@@ -182,6 +234,8 @@ int main(int argc, char **argv) {
     auto opt_cliburst = Config::OptValInt::create(1000);
     auto opt_notls = Config::OptValFlag::create(false);
     auto opt_delta = Config::OptValDouble::create(1);
+    auto opt_leader_fault = Config::OptValFlag::create(false); // add this option to enable the faulty leaders
+    auto opt_faulty_list = Config::OptValStr::create(""); // add this option for specific faulty replica list
 
     config.add_opt("block-size", opt_blk_size, Config::SET_VAL);
     config.add_opt("parent-limit", opt_parent_limit, Config::SET_VAL);
@@ -205,6 +259,8 @@ int main(int argc, char **argv) {
     config.add_opt("notls", opt_notls, Config::SWITCH_ON, 's', "disable TLS");
     config.add_opt("delta", opt_delta, Config::SET_VAL, 'd', "maximum network delay");
     config.add_opt("help", opt_help, Config::SWITCH_ON, 'h', "show this help info");
+    config.add_opt("leader-fault", opt_leader_fault, Config::SWITCH_ON, 'F', "enable faulty leaders (default: false)");
+    config.add_opt("faulty-list", opt_faulty_list, Config::SET_VAL, '\0', "specify list of faulty replicas, e.g., \"0,2,4,6,8\"");
 
     EventContext ec;
     config.parse(argc, argv);
@@ -268,6 +324,20 @@ int main(int argc, char **argv) {
     clinet_config
         .burst_size(opt_cliburst->get())
         .nworker(opt_clinworker->get());
+
+        // 读取并处理faulty-list配置
+    std::vector<ReplicaID> faulty_replicas = get_faulty_list(opt_faulty_list->get());
+
+    // check if faulty 
+    if(is_faulty_replica(idx,faulty_replicas)) {
+        HOTSTUFF_LOG_INFO("replica %d is considered faulty, existing", idx);
+        exit(0);
+    }
+  
+    // 读取leader-fault配置
+    bool enable_leader_fault = opt_leader_fault->get();
+    HOTSTUFF_LOG_INFO("leader fault mode: %s", enable_leader_fault ? "enabled" : "disabled");
+
     papp = new HotStuffApp(opt_blk_size->get(),
                         opt_stat_period->get(),
                         opt_imp_timeout->get(),

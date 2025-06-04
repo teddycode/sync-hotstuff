@@ -19,6 +19,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/salticidae/cmake/Modules/")
 
+# 设置所有二进制文件的输出目录为./bin
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/bin/libs)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/bin/arch)
+
 add_subdirectory(salticidae)
 include_directories(salticidae/include)
 
@@ -78,6 +83,7 @@ option(HOTSTUFF_NORMAL_LOG "enable normal log" ON)
 option(HOTSTUFF_PROTO_LOG "enable protocol log" OFF)
 option(HOTSTUFF_MSG_STAT "eanble message statistics" ON)
 option(HOTSTUFF_BLK_PROFILE "enable block profiling" OFF)
+option(HOTSTUFF_ENABLE_BENCHMARK "enable benchmark mode" OFF)
 option(BUILD_EXAMPLES "build examples" ON)
 
 configure_file(src/config.h.in include/hotstuff/config.h @ONLY)
